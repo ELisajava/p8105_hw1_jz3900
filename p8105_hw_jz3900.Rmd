@@ -5,7 +5,7 @@ date: "2024-09-21"
 output: github_document
 ---
 
-```{r setup, include=FALSE}
+```{r}
 # Load the necessary package
 library(palmerpenguins)
 
