@@ -6,6 +6,13 @@ output: github_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
+# Load the necessary package
+library(palmerpenguins)
 
+# Load the dataset
+data("penguins", package = "palmerpenguins")
+
+# Description of the early_january_weather dataset
+names(penguins)
+```
+uhdueihfidsfjosdfj
