@@ -43,3 +43,21 @@ The size of the dataset is `r nrow(penguins)` rows and `r ncol(penguins)` column
 
 The mean flipper length is `r mean(pull(penguins, flipper_length_mm), na.rm = TRUE)`
 
+## Creating scatterplot
+
+Use this code to create a scatterplot with flipper_length_mm on the y-axis and bill_length_mm on the x-axis, using different colors for each species:
+
+```{r}
+#create a scatterplot
+scatterplot = ggplot(penguins, aes(x = bill_length_mm, y = flipper_length_mm, color = species)) +
+  geom_point(na.rm = TRUE) +
+  labs(
+    title = "scatterplot of flipper_length_mm (y) vs bill_length_mm (x)",
+    x = "Bill Length (mm)",
+    y = "Flipper Length (mm)"
+  ) +
+  theme_classic()
+print(scatterplot)
+# save the scatterplot
+ggsave(filename = "scatterplot_flipper_vs_bill.png", plot = scatterplot, width = 8, height = 8)
+```
