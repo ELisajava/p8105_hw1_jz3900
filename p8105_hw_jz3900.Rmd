@@ -1,134 +1,432 @@
 ---
-title: "p8105_hw_jz3900"
-author: "ELisajava"
-date: "2024-09-21"
-output: github_document
+title: "Graphical Model Comparison: Partial Correlation vs GGM"
+author: "Jiawa Zhang"
+date: "2025-12-18"
+output: html_document
 ---
 
-This is my R Markdown file for P8105 HW1 (jz3900)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(boot)
+library(glasso)
+library(igraph)
+library(gtsummary)
+library(patchwork)
 
-Load the tidyverse function for HW1
-```{r library, message=FALSE}
-library(tidyverse)
-```
-# Problem 1
-
-The task involves providing a brief description of the penguins dataset, which includes:
-
-* The data in the dataset, including the names and values of important variables
-
-* The size of the dataset
-
-* The mean flipper length
-
-* Creating a scatterplot
-
-
-Load the penguins dataset from the "palmerpenguins" package:
-
-```{r}
-data("penguins", package = "palmerpenguins")
+set.seed(2025)
 ```
 
-## Names of the dataset
 ```{r}
-names(penguins)
-```
-It shows that the names in the penguins dataset are: bill_depth_mm, bill_length_mm, body_mass_g, flipper_length_mm, island, sex, species, year.
+data_dir <- "/Users/java/Desktop/fMRI_CMU_restingState/data"
+files <- list.files(data_dir, full.names = TRUE)
 
-## The size of the dataset
-The size of the dataset is `r nrow(penguins)` rows and `r ncol(penguins)` columns
-
-## The mean flipper length
-
-The mean flipper length is `r mean(pull(penguins, flipper_length_mm), na.rm = TRUE)`
-
-## Creating scatterplot
-
-Use this code to create a scatterplot with flipper_length_mm on the y-axis and bill_length_mm on the x-axis, using different colors for each species:
-
-```{r}
-#create a scatterplot
-scatterplot = ggplot(penguins, aes(x = bill_length_mm, y = flipper_length_mm, color = species)) +
-  geom_point(na.rm = TRUE) +
-  labs(
-    title = "scatterplot of flipper_length_mm (y) vs bill_length_mm (x)",
-    x = "Bill Length (mm)",
-    y = "Flipper Length (mm)"
-  ) +
-  theme_classic()
-print(scatterplot)
-# save the scatterplot
-ggsave(filename = "scatterplot_flipper_vs_bill.png", plot = scatterplot, width = 8, height = 8)
+read_subject <- function(file) {
+  dat <- as.matrix(read.table(file))
+  scale(dat)
+}
 ```
 
-# Problem 2
-This problem involves creating a data frame that includes:
 
-* A random sample of size 10 from a standard normal distribution
-* A logical vector indicating whether the elements of the sample are greater than 0
-* A character vector of length 10
-* A factor vector of length 10 with three distinct factor levels
-* attempt to calculate the mean of each variable in the data frame.
-
-## Create data frame
-### First, create four variables describes in the problem 2:
-
-Create a random sample:
 ```{r}
-random_samp = rnorm(10)
+## ---- graphical lasso precision ----
+fit_glasso_precision <- function(dat, lambda) {
+  S <- cov(dat)
+  glasso(S, rho = lambda)$wi
+}
+
+## ---- GGM from precision ----
+graph_from_precision <- function(Theta) {
+  adj <- abs(Theta) > 0
+  diag(adj) <- 0
+  graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE)
+}
+
+## ---- partial correlation graph ----
+graph_from_partial_corr <- function(Theta, thresh) {
+  D <- diag(1 / sqrt(diag(Theta)))
+  pcor <- -D %*% Theta %*% D
+  diag(pcor) <- 0
+  adj <- abs(pcor) > thresh
+  graph_from_adjacency_matrix(adj, mode = "undirected", diag = FALSE)
+}
 ```
 
-Create a logical vector:
-```{r}
-logical_vec = random_samp > 0
-```
 
-Create a character vector of length 10:
 ```{r}
-char_vec = sample(c("1","2","3"), size=10, replace = TRUE)
-```
-
-Create a factor vector:
-```{r}
-factor_vec = factor(sample(c("Low", "Medium", "High"), size = 10, replace = TRUE))
-```
-
-### Then put these vector into the dataframe:
-```{r}
-HW1_df=
+graph_metrics <- function(g) {
   tibble(
-    random_samp=random_samp,
-    logical_vec=logical_vec,
-    char_vec=char_vec,
-    factor_vec=factor_vec
+    density = edge_density(g),
+    mean_distance = mean_distance(g, directed = FALSE),
+    eccentricity = mean(eccentricity(g)),
+    modularity = modularity(cluster_fast_greedy(g))
+  )
+}
+```
+
+
+```{r}
+set.seed(2025)
+
+tune_file <- sample(files, 1)
+dat_tune <- read_subject(tune_file)
+
+## ---- lambda tuning ----
+lambda_grid <- exp(seq(log(0.01), log(0.3), length.out = 10))
+
+lambda_results <- map_dfr(lambda_grid, function(lam) {
+  Theta <- fit_glasso_precision(dat_tune, lam)
+  g <- graph_from_precision(Theta)
+  tibble(lambda = lam, edges = gsize(g))
+})
+
+lambda_selected <- lambda_results %>%
+  arrange(lambda) %>%
+  mutate(edge_drop = c(NA, diff(edges))) %>%
+  filter(edge_drop < quantile(edge_drop, 0.25, na.rm = TRUE)) %>%
+  slice(1) %>%
+  pull(lambda)
+```
+
+
+```{r}
+ggplot(lambda_results, aes(lambda, edges)) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  geom_vline(xintercept = lambda_selected,
+             linetype = "dashed", color = "red") +
+  labs(
+    title = "Lambda selection via edge sparsity",
+    x = expression(lambda),
+    y = "Number of edges"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+pcor_grid <- seq(0.05, 0.3, by = 0.05)
+Theta_tune <- fit_glasso_precision(dat_tune, lambda_selected)
+
+pcor_results <- map_dfr(pcor_grid, function(th) {
+  g <- graph_from_partial_corr(Theta_tune, th)
+  tibble(pcor_thresh = th, edges = gsize(g))
+})
+
+target_edges <- lambda_results %>%
+  filter(lambda == lambda_selected) %>%
+  pull(edges)
+
+pcor_selected <- pcor_results %>%
+  mutate(diff = abs(edges - target_edges)) %>%
+  arrange(diff) %>%
+  slice(1) %>%
+  pull(pcor_thresh)
+```
+
+
+```{r}
+ggplot(pcor_results, aes(pcor_thresh, edges)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = pcor_selected,
+             linetype = "dashed", color = "blue") +
+  labs(
+    title = "Partial correlation threshold selection",
+    x = "Threshold",
+    y = "Number of edges"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+lambda <- lambda_selected
+pcor_thresh <- pcor_selected
+
+all_results <- map_dfr(files, function(f) {
+
+  subject <- sprintf(
+    "%07d",
+    as.integer(stringr::str_extract(basename(f), "\\d+"))
+  )
+
+  dat <- read_subject(f)
+  Theta <- fit_glasso_precision(dat, lambda)
+
+  bind_rows(
+    graph_metrics(graph_from_precision(Theta)) %>%
+      mutate(subject = subject, method = "GGM"),
+    graph_metrics(graph_from_partial_corr(Theta, pcor_thresh)) %>%
+      mutate(subject = subject, method = "PartialCorr")
+  )
+})
+
+stopifnot(all(table(all_results$subject) == 2))
+```
+
+
+```{r}
+paired_df <- all_results %>%
+  pivot_wider(
+    names_from = method,
+    values_from = c(density, mean_distance, eccentricity, modularity)
+  )
+
+metrics <- c("density", "mean_distance", "eccentricity", "modularity")
+
+diff_df <- map_dfr(metrics, function(m) {
+  tibble(
+    metric = m,
+    diff =
+      paired_df[[paste0(m, "_PartialCorr")]] -
+      paired_df[[paste0(m, "_GGM")]]
+  )
+})
+```
+
+
+```{r}
+t_results <- diff_df %>%
+  group_by(metric) %>%
+  summarise(
+    mean_diff = mean(diff),
+    sd_diff   = sd(diff),
+    p_raw     = t.test(diff)$p.value,
+    cohens_d  = mean(diff) / sd(diff),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p_adj = p.adjust(p_raw, method = "BH")
+  )
+
+boot_ci <- diff_df %>%
+  group_by(metric) %>%
+  summarise(
+    ci_low  = quantile(boot(diff, function(d, i) mean(d[i]), R = 2000)$t, 0.025),
+    ci_high = quantile(boot(diff, function(d, i) mean(d[i]), R = 2000)$t, 0.975),
+    .groups = "drop"
   )
 ```
 
-## Take mean of each variable
-Next, attempt to calculate the mean of each variable in the data frame (HW1_df) using the pull function from the tidyverse package.
-```{r mean_pull}
-mean(pull(HW1_df, random_samp))
-mean(pull(HW1_df, logical_vec))
-mean(pull(HW1_df, char_vec))
-mean(pull(HW1_df, factor_vec))
-```
 
-The result shows that we can take the mean of a numeric variable and logical variable, but can't take the mean of character and factor variables.
-
-Then, use as.numeric function to character, and factor variables, in order to try to convert them to numeric variable.
 ```{r}
-char_vec_numeric=as.numeric(pull(HW1_df, char_vec))
-factor_vec_numeric=as.numeric(pull(HW1_df, factor_vec))
-```
-Try to caclulate the mean of the converted variable:
-```{r}
-mean_char_vec=mean(char_vec_numeric)
-mean_factor_vec=mean(factor_vec_numeric)
-```
-```{r, echo=FALSE}
-cat("The mean of the char_vect is", mean_char_vec)
-cat("The mean of the factor_vec is", mean_factor_vec)
+final_table <- t_results %>%
+  left_join(boot_ci, by = "metric") %>%
+  mutate(
+    `Mean Difference (SD)` = sprintf("%.3f (%.3f)", mean_diff, sd_diff),
+    `95% CI` = sprintf("[%.3f, %.3f]", ci_low, ci_high),
+    `Raw p-value` = sprintf("%.4f", p_raw),
+    `BH-adjusted p-value` = sprintf("%.4f", p_adj),
+    `Cohen's d` = round(cohens_d, 3)
+  ) %>%
+  select(
+    Metric = metric,
+    `Mean Difference (SD)`,
+    `95% CI`,
+    `Cohen's d`,
+    `Raw p-value`,
+    `BH-adjusted p-value`
+  )
+
+final_table
 ```
 
-The reason for this may be that I used numbers 1, 2, and 3 to create the char_vec, so after conversion, it can be calculated. Additionally, the factor vector can be transformed into numeric values using the as.numeric function.
+
+```{r}
+p <- ggplot(diff_df, aes(metric, diff)) +
+  geom_boxplot(fill = "grey90") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Paired differences in graph-theoretic metrics",
+    y = "PartialCorr − GGM",
+    x = "Metric"
+  ) +
+  theme_minimal()
+
+ggsave(
+  filename = "boxplot_paired_differences.pdf",
+  plot = p,
+  width = 6,
+  height = 4,
+  units = "in"
+)
+```
+
+```{r}
+## =====================================================
+## Functional Connectivity Network Visualization
+## Partial Correlation vs Gaussian Graphical Model
+## =====================================================
+
+## -------------------------------
+## 0. Load required packages
+## -------------------------------
+library(glasso)
+library(igraph)
+library(Matrix)
+
+## -------------------------------
+## 1. Check and prepare data
+## -------------------------------
+# This script assumes you ALREADY loaded one subject's
+# resting-state fMRI data as:
+#   dat_mat  OR  dat_param
+# with dimension: time x ROI
+
+if (exists("dat_mat")) {
+  X <- as.matrix(dat_mat)
+} else if (exists("dat_param")) {
+  X <- as.matrix(dat_param)
+} else {
+  stop("ERROR: dat_mat or dat_param not found in environment.")
+}
+
+# sanity checks
+stopifnot(is.numeric(X))
+stopifnot(!any(is.na(X)))
+
+n <- nrow(X)
+p <- ncol(X)
+
+cat("Using data with", n, "time points and", p, "ROIs\n")
+
+## -------------------------------
+## 2. Sample covariance (stabilized)
+## -------------------------------
+S <- cov(X)
+
+# add small ridge to ensure positive definiteness
+eps <- 1e-4
+S <- S + diag(eps, p)
+
+## -------------------------------
+## 3. Partial correlation network
+## -------------------------------
+Omega_hat <- solve(S)
+
+pcor_mat <- -Omega_hat / sqrt(outer(diag(Omega_hat), diag(Omega_hat)))
+diag(pcor_mat) <- 0
+
+# threshold chosen from your tuning procedure
+pcor_thresh <- 0.15   # <-- adjust if needed
+adj_pcor <- abs(pcor_mat) > pcor_thresh
+
+cat("Partial correlation edges:",
+    sum(adj_pcor) / 2, "\n")
+
+## -------------------------------
+## 4. Gaussian Graphical Model (glasso)
+## -------------------------------
+lambda <- 0.10   # <-- use your selected lambda
+
+glasso_fit <- glasso(S, rho = lambda)
+
+Omega_glasso <- glasso_fit$wi
+adj_glasso <- Omega_glasso != 0
+diag(adj_glasso) <- 0
+
+cat("GGM edges:",
+    sum(adj_glasso) / 2, "\n")
+
+## -------------------------------
+## 5. Build igraph objects
+## -------------------------------
+g_pcor <- graph_from_adjacency_matrix(
+  adj_pcor,
+  mode = "undirected",
+  diag = FALSE
+)
+
+g_glasso <- graph_from_adjacency_matrix(
+  adj_glasso,
+  mode = "undirected",
+  diag = FALSE
+)
+
+## -------------------------------
+## 6. Shared node layout (critical)
+## -------------------------------
+set.seed(2025)
+layout_shared <- layout_with_fr(g_pcor)
+
+## -------------------------------
+## 7. Plot and export to PDF
+## -------------------------------
+pdf("network_visualization.pdf", width = 10, height = 5)
+
+par(mfrow = c(1, 2), mar = c(1, 1, 3, 1))
+
+plot(
+  g_pcor,
+  layout = layout_shared,
+  vertex.size = 3,
+  vertex.label = NA,
+  edge.color = "grey60",
+  main = "(a) Partial Correlation Network"
+)
+
+plot(
+  g_glasso,
+  layout = layout_shared,
+  vertex.size = 3,
+  vertex.label = NA,
+  edge.color = "grey60",
+  main = "(b) Gaussian Graphical Model"
+)
+
+dev.off()
+
+cat("Saved figure: network_visualization.pdf\n")
+```
+
+
+```{r}
+p_lambda <- ggplot(lambda_results, aes(lambda, edges)) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  geom_vline(
+    xintercept = lambda_selected,
+    linetype = "dashed",
+    color = "red"
+  ) +
+  labs(
+    title = "Lambda selection via edge sparsity",
+    x = expression(lambda),
+    y = "Number of edges"
+  ) +
+  theme_minimal()
+
+p_pcor <- ggplot(pcor_results, aes(pcor_thresh, edges)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(
+    xintercept = pcor_selected,
+    linetype = "dashed",
+    color = "blue"
+  ) +
+  labs(
+    title = "Partial correlation threshold selection",
+    x = "Threshold",
+    y = "Number of edges"
+  ) +
+  theme_minimal()
+
+p_combined <- p_lambda | p_pcor
+
+ggsave(
+  filename = "parameter_selection.pdf",
+  plot = p_combined,
+  width = 10,
+  height = 4,
+  units = "in"
+)
+
+
+```
+
